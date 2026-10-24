@@ -31,7 +31,7 @@ MAX_PER_SCAN = 2      # most signals in one 5 minute scan
 COOLDOWN_MIN = 30     # wait before a new signal on the same pair
 EXPIRE_MIN = 180      # close a trade that is still open after 3 hours
 CANDLE_MIN = 5
-STALE_MIN = 12        # ignore data older than this
+STALE_MIN = 10        # signals older than this are dropped, and this is the valid time
 STOP_ATR = 1.0        # stop loss distance, in average candle ranges
 TARGET_R = 1.5        # target is 1.5 times the stop distance
 FIRST_HOUR = 5        # 05 UTC is 6am Nigerian time
@@ -272,11 +272,11 @@ def main():
             # if both happen in one candle, count it as a loss to stay honest
             if hit_stop:
                 log.at[i, "status"], log.at[i, "result_r"] = "loss", "-1"
-                messages.append(f"RESULT: {row['pair']} {row['direction']} hit the stop loss. Loss of 1R.")
+                messages.append(f"❌ RESULT: {row['pair']} {row['direction']} hit the stop loss. Loss of 1R.")
                 closed = True
             elif hit_target:
                 log.at[i, "status"], log.at[i, "result_r"] = "win", str(TARGET_R)
-                messages.append(f"RESULT: {row['pair']} {row['direction']} hit the target. Gain of {TARGET_R}R.")
+                messages.append(f"✅ RESULT: {row['pair']} {row['direction']} hit the target. Gain of {TARGET_R}R 🎉")
                 closed = True
             if closed:
                 log.at[i, "closed_time"] = ts.strftime("%Y-%m-%d %H:%M")
@@ -334,16 +334,26 @@ def main():
                 gold_sent += 1
             else:
                 other_sent += 1
+
+            go_time = (entry_time + pd.Timedelta(hours=1)).strftime("%H:%M")
+            until = (entry_time + pd.Timedelta(minutes=STALE_MIN, hours=1)).strftime("%H:%M")
+            if direction == "BUY":
+                head = f"🟢 BUY {pair} 📈🔥"
+            else:
+                head = f"🔴 SELL {pair} 📉🔥"
             messages.append(
-                f"SIGNAL: {pair} {direction}\n"
-                f"Strategy: {strategy}\n"
-                f"Entry: around {fmt(pair, entry)}\n"
-                f"Stop loss: {fmt(pair, stop)}\n"
-                f"Target: {fmt(pair, target)}\n"
-                f"Reward to risk: {TARGET_R} to 1\n"
-                f"Why: {reason}\n"
-                f"Valid for about 10 minutes. Skip it if price has moved more than "
-                f"{fmt(pair, 0.25 * risk)} from the entry.\n\n{DISCLAIMER}"
+                f"{head}\n\n"
+                f"⏰ Enter at: {go_time} Nigerian time\n"
+                f"⌛ Valid until: {until}\n\n"
+                f"💰 Entry: around {fmt(pair, entry)}\n"
+                f"🛑 Stop loss: {fmt(pair, stop)}\n"
+                f"🎯 Target: {fmt(pair, target)}\n"
+                f"⚖️ Reward to risk: {TARGET_R} to 1\n\n"
+                f"🧠 Strategy: {strategy}\n"
+                f"💡 Why: {reason}\n\n"
+                f"😊 Skip it if price has moved more than {fmt(pair, 0.25 * risk)} "
+                f"from the entry, or the valid time has passed.\n"
+                f"⚠️ {DISCLAIMER}"
             )
 
     # Test run: show where prices came from and how fresh they are
@@ -356,7 +366,7 @@ def main():
                 age = (now - (df.index[-1] + pd.Timedelta(minutes=CANDLE_MIN))).total_seconds() / 60
                 lines.append(f"{pair}: {SOURCES.get(pair, '?')}, latest candle {age:.0f} min old")
         messages.append("TEST OK. The bot is connected.\n" + "\n".join(lines) +
-                        "\n\nIf a candle is older than 12 minutes, the bot will not post signals on that pair.")
+                        "\n\nIf a candle is older than 10 minutes, the bot will not post signals on that pair.")
 
     # 3. Daily summary at 5pm Nigerian time
     if not TEST and weekday < 5 and hour >= SUMMARY_HOUR and last_summary != today:
@@ -374,9 +384,9 @@ def main():
             status = row["status"]
             r = float(row["result_r"]) if row["result_r"] != "" else 0.0
             if status == "win":
-                tag, wins = "WON", wins + 1
+                tag, wins = "WON ✅", wins + 1
             elif status == "loss":
-                tag, losses = "LOST", losses + 1
+                tag, losses = "LOST ❌", losses + 1
             elif status == "expired":
                 tag, closed = "CLOSED", closed + 1
             else:
@@ -387,7 +397,7 @@ def main():
             local = (pd.Timestamp(row["time"]) + pd.Timedelta(hours=1)).strftime("%H:%M")
             lines.append(f"{local} {row['pair']} {row['direction']}: {tag}{extra}")
 
-        text = f"DAILY SUMMARY {today}\n"
+        text = f"📊 DAILY SUMMARY {today}\n"
         if len(todays) == 0:
             text += "No signals today. Staying out is part of the plan."
         else:
