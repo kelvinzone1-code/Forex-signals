@@ -42,6 +42,7 @@ TEST = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 SOURCES = {}
 ERRORS = {}
 DISCLAIMER = "Not financial advice. Risk no more than 1% of your account per trade."
+HEADING = "⚡ LASER AI VIP SIGNAL ⚡"
 
 
 def send(text):
@@ -342,6 +343,7 @@ def main():
             else:
                 head = f"🔴 SELL {pair} 📉🔥"
             messages.append(
+                f"{HEADING}\n\n"
                 f"{head}\n\n"
                 f"⏰ Enter at: {go_time} Nigerian time\n"
                 f"⌛ Valid until: {until}\n\n"
@@ -397,7 +399,7 @@ def main():
             local = (pd.Timestamp(row["time"]) + pd.Timedelta(hours=1)).strftime("%H:%M")
             lines.append(f"{local} {row['pair']} {row['direction']}: {tag}{extra}")
 
-        text = f"📊 DAILY SUMMARY {today}\n"
+        text = f"📊 FOREX DAILY SUMMARY {today}\n"
         if len(todays) == 0:
             text += "No signals today. Staying out is part of the plan."
         else:
