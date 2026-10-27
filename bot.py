@@ -24,9 +24,7 @@ SUMMARY_FILE = "last_summary.txt"
 COLUMNS = ["time", "pair", "strategy", "direction", "entry", "stop",
            "target", "status", "closed_time", "result_r"]
 
-MAX_PER_DAY = 10      # total signals per day
-GOLD_MAX = 7          # up to 7 of the 10 can be gold
-OTHER_MAX = 3         # up to 3 can be other pairs
+MAX_PER_DAY = 10      # total signals per day, across all pairs
 MAX_PER_SCAN = 2      # most signals in one 5 minute scan
 COOLDOWN_MIN = 30     # wait before a new signal on the same pair
 EXPIRE_MIN = 180      # close a trade that is still open after 3 hours
@@ -294,9 +292,7 @@ def main():
 
     new_count = 0
     if can_signal:
-        sent = log[log["time"].str[:10] == today]
-        gold_sent = int((sent["pair"] == "XAUUSD").sum())
-        other_sent = len(sent) - gold_sent
+        sent_today = int((log["time"].str[:10] == today).sum())
         candidates = []
         for pair, df in data.items():
             if df is None:
@@ -310,17 +306,13 @@ def main():
                 continue
             sig = find_signal(pair, df)
             if sig and allowed(log, pair, sig[0]):
-                # gold first, then the strongest trend
-                candidates.append((pair != "XAUUSD", -float(df["adx"].iloc[-1]), pair, sig, df))
-        candidates.sort(key=lambda x: (x[0], x[1]))
+                # no pair gets priority: the strongest trend goes first
+                candidates.append((-float(df["adx"].iloc[-1]), pair, sig, df))
+        candidates.sort(key=lambda x: x[0])
 
-        for _, _, pair, (strategy, direction, reason), df in candidates:
-            if new_count >= MAX_PER_SCAN or gold_sent + other_sent >= MAX_PER_DAY:
+        for _, pair, (strategy, direction, reason), df in candidates:
+            if new_count >= MAX_PER_SCAN or sent_today >= MAX_PER_DAY:
                 break
-            if pair == "XAUUSD" and gold_sent >= GOLD_MAX:
-                continue
-            if pair != "XAUUSD" and other_sent >= OTHER_MAX:
-                continue
             last = df.iloc[-1]
             entry = float(last["Close"])
             risk = STOP_ATR * float(last["atr"])
@@ -331,10 +323,7 @@ def main():
             log.loc[len(log)] = [entry_time.strftime("%Y-%m-%d %H:%M"), pair, strategy,
                                  direction, entry, stop, target, "open", "", ""]
             new_count += 1
-            if pair == "XAUUSD":
-                gold_sent += 1
-            else:
-                other_sent += 1
+            sent_today += 1
 
             go_time = (entry_time + pd.Timedelta(hours=1)).strftime("%H:%M")
             until = (entry_time + pd.Timedelta(minutes=STALE_MIN, hours=1)).strftime("%H:%M")
@@ -403,8 +392,7 @@ def main():
         if len(todays) == 0:
             text += "No signals today. Staying out is part of the plan."
         else:
-            gold_n = int((todays["pair"] == "XAUUSD").sum())
-            text += (f"Signals: {len(todays)} (gold {gold_n}, others {len(todays) - gold_n})\n"
+            text += (f"Signals: {len(todays)}\n"
                      f"Won: {wins}\nLost: {losses}\nClosed at day end: {closed}\n"
                      f"Net result: {net:+.1f}R\n\n"
                      "Times are Nigerian time.\n" + "\n".join(lines))
