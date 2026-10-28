@@ -27,6 +27,8 @@ COLUMNS = ["time", "pair", "strategy", "direction", "entry", "stop",
 MAX_PER_DAY = 10      # total signals per day, across all pairs
 MAX_PER_SCAN = 2      # most signals in one 5 minute scan
 COOLDOWN_MIN = 30     # wait before a new signal on the same pair
+FLIP_BLOCK_MIN = 120  # no opposite direction signal on the same pair within 2 hours
+MIN_ADX = 25          # only trade when the trend is strong
 EXPIRE_MIN = 180      # close a trade that is still open after 3 hours
 CANDLE_MIN = 5
 STALE_MIN = 10        # signals older than this are dropped, and this is the valid time
@@ -134,7 +136,7 @@ def get_data(pair, ticker):
     # remove the candle that is still forming
     now = pd.Timestamp.now(tz="UTC")
     df = df[df.index + pd.Timedelta(minutes=CANDLE_MIN) <= now]
-    if len(df) < 150:
+    if len(df) < 250:
         return None
 
     c, h, l = df["Close"], df["High"], df["Low"]
@@ -161,6 +163,7 @@ def get_data(pair, ticker):
     df["ema9"] = c.ewm(span=9, adjust=False).mean()
     df["ema21"] = c.ewm(span=21, adjust=False).mean()
     df["ema50"] = c.ewm(span=50, adjust=False).mean()
+    df["ema200"] = c.ewm(span=200, adjust=False).mean()
     df["hh12"] = h.rolling(12).max().shift(1)
     df["ll12"] = l.rolling(12).min().shift(1)
     return df
@@ -168,19 +171,20 @@ def get_data(pair, ticker):
 
 def find_signal(pair, df):
     last = df.iloc[-1]
-    need = ["atr", "atr_med", "adx", "rsi", "ema50", "hh12", "ll12"]
+    need = ["atr", "atr_med", "adx", "rsi", "ema50", "ema200", "hh12", "ll12"]
     if last[need].isna().any():
         return None
-    # Quiet market, tiny candles or no trend: stay out
+    # Quiet market, tiny candles or weak trend: stay out
     if last["atr"] < 0.8 * last["atr_med"]:
         return None
     if last["atr"] < MIN_ATR[pair]:
         return None
-    if last["adx"] < 20:
+    if last["adx"] < MIN_ADX:
         return None
 
-    up = last["ema9"] > last["ema21"] > last["ema50"]
-    down = last["ema9"] < last["ema21"] < last["ema50"]
+    # Trade only with the short trend AND the bigger trend (the 200 average, about 16 hours)
+    up = last["ema9"] > last["ema21"] > last["ema50"] and last["Close"] > last["ema200"]
+    down = last["ema9"] < last["ema21"] < last["ema50"] and last["Close"] < last["ema200"]
     recent = df.iloc[-3:]
     body = abs(last["Close"] - last["Open"])
 
@@ -195,10 +199,10 @@ def find_signal(pair, df):
                 "Short term downtrend, price rose to the 21 average and turned down.")
 
     # Scalp 2: range breakout
-    if up and last["adx"] >= 22 and last["Close"] > last["hh12"] and body >= 0.5 * last["atr"]:
+    if up and last["Close"] > last["hh12"] and body >= 0.5 * last["atr"]:
         return ("Range breakout", "BUY",
                 "Strong candle closed above the last hour's high in an uptrend.")
-    if down and last["adx"] >= 22 and last["Close"] < last["ll12"] and body >= 0.5 * last["atr"]:
+    if down and last["Close"] < last["ll12"] and body >= 0.5 * last["atr"]:
         return ("Range breakout", "SELL",
                 "Strong candle closed below the last hour's low in a downtrend.")
     return None
@@ -220,6 +224,24 @@ def cooled_down(log, pair, now):
         return True
     last_time = pd.Timestamp(rows["time"].iloc[-1]).tz_localize("UTC")
     return now - last_time >= pd.Timedelta(minutes=COOLDOWN_MIN)
+
+
+def flipped_recently(log, pair, direction, now):
+    # Block a signal that goes the opposite way of the last signal on the same pair
+    rows = log[log["pair"] == pair]
+    if rows.empty:
+        return False
+    last_row = rows.iloc[-1]
+    last_time = pd.Timestamp(last_row["time"]).tz_localize("UTC")
+    return last_row["direction"] != direction and now - last_time < pd.Timedelta(minutes=FLIP_BLOCK_MIN)
+
+
+def paused_today(log, pair, today):
+    # Stop a pair for the day after two losses in a row
+    rows = log[(log["pair"] == pair) & (log["time"].str[:10] == today)
+               & (log["status"].isin(["win", "loss", "expired"]))]
+    last_two = rows.tail(2)
+    return len(last_two) == 2 and bool((last_two["status"] == "loss").all())
 
 
 def close_at_market(log, i, row, df, now):
@@ -304,10 +326,17 @@ def main():
                 continue
             if not cooled_down(log, pair, now):
                 continue
+            if paused_today(log, pair, today):
+                continue
             sig = find_signal(pair, df)
-            if sig and allowed(log, pair, sig[0]):
-                # no pair gets priority: the strongest trend goes first
-                candidates.append((-float(df["adx"].iloc[-1]), pair, sig, df))
+            if not sig:
+                continue
+            if not allowed(log, pair, sig[0]):
+                continue
+            if flipped_recently(log, pair, sig[1], now):
+                continue
+            # no pair gets priority: the strongest trend goes first
+            candidates.append((-float(df["adx"].iloc[-1]), pair, sig, df))
         candidates.sort(key=lambda x: x[0])
 
         for _, pair, (strategy, direction, reason), df in candidates:
